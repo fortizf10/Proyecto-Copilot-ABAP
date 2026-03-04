@@ -1,0 +1,349 @@
+*&---------------------------------------------------------------------*
+*& Report ZCOPILOT_PROYECTOFINAL_EO - Business Partner Audit System
+*&---------------------------------------------------------------------*
+REPORT ZCOPILOT_PROYECTOFINAL_EO.
+
+*----------------------------------------------------------------------*
+* Definición de Tipos
+*----------------------------------------------------------------------*
+TYPES: BEGIN OF ty_bp_context,
+         partner_id TYPE bu_partner,
+         bp_type    TYPE c LENGTH 1,
+         nit        TYPE string,
+         dpi_cui    TYPE string,
+         email      TYPE string,
+         phone      TYPE string,
+       END OF ty_bp_context.
+TYPES tt_bp_context TYPE STANDARD TABLE OF ty_bp_context WITH EMPTY KEY.
+
+TYPES: BEGIN OF ty_validation_msg,
+         partner_id     TYPE bu_partner,
+         bp_type        TYPE c LENGTH 1,
+         field_name     TYPE string,
+         severity       TYPE c LENGTH 1, " V = Verde, A = Amarillo, R = Rojo
+         message        TYPE string,
+         original_value TYPE string,
+         proposed_value TYPE string,
+       END OF ty_validation_msg.
+TYPES tt_validation_msg TYPE STANDARD TABLE OF ty_validation_msg WITH EMPTY KEY.
+
+" Estructura para el reporte ALV final
+TYPES: BEGIN OF ty_alv_line,
+         estado         TYPE icon_d,     " Semáforo
+         partner_id     TYPE bu_partner,  " BP
+         bp_type        TYPE c LENGTH 1,  " Tipo
+         field_name     TYPE string,      " Campo
+         original_value TYPE string,      " Valor Actual
+         proposed_value TYPE string,      " Valor Corregido
+         message        TYPE string,      " Estado (Texto)
+       END OF ty_alv_line.
+TYPES tt_alv_line TYPE STANDARD TABLE OF ty_alv_line WITH EMPTY KEY.
+
+*----------------------------------------------------------------------*
+* Pantalla de Selección
+*----------------------------------------------------------------------*
+SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE TEXT-001.
+  SELECT-OPTIONS: s_bp FOR ('BU_PARTNER').
+  PARAMETERS: p_pers RADIOBUTTON GROUP r1,
+              p_org  RADIOBUTTON GROUP r1,
+              p_all  RADIOBUTTON GROUP r1 DEFAULT 'X'.
+SELECTION-SCREEN END OF BLOCK b1.
+
+SELECTION-SCREEN BEGIN OF BLOCK b2 WITH FRAME TITLE TEXT-002.
+  PARAMETERS: p_max TYPE i DEFAULT 500.
+SELECTION-SCREEN END OF BLOCK b2.
+
+*----------------------------------------------------------------------*
+* Clase de Validación
+*----------------------------------------------------------------------*
+"! <p class="shorttext synchronized">Clase para validación de datos de Business Partner</p>
+"! Clase encargada de realizar validaciones de datos de Business Partner, incluyendo NIT, DPI, Email y Teléfono.
+"! Implementa reglas de negocio específicas y normativas aplicables.
+"! Normativas aplicables:
+"! - Formato de NIT: XXXXXXXX-X
+"! - DPI: 13 dígitos numéricos
+"! - Email: Formato estándar con '@'
+"! - Teléfono: Código de país 502 seguido de 8 dígitos
+CLASS zcop_bp_validator DEFINITION.
+  PUBLIC SECTION.
+    METHODS:
+      validate_nit IMPORTING is_bp TYPE ty_bp_context RETURNING VALUE(rt_ms) TYPE tt_validation_msg,
+      validate_email IMPORTING is_bp TYPE ty_bp_context RETURNING VALUE(rt_ms) TYPE tt_validation_msg,
+      validate_dpi IMPORTING is_bp TYPE ty_bp_context RETURNING VALUE(rt_ms) TYPE tt_validation_msg,
+      validate_phone IMPORTING is_bp TYPE ty_bp_context RETURNING VALUE(rt_ms) TYPE tt_validation_msg.
+  PRIVATE SECTION.
+    METHODS normalize_nit IMPORTING iv_nit TYPE string RETURNING VALUE(rv_nit) TYPE string.
+ENDCLASS.
+
+CLASS zcop_bp_validator IMPLEMENTATION.
+
+"! <p class="shorttext synchronized">Normaliza el NIT del Business Partner</p>
+"! Elimina caracteres no válidos y ajusta el formato XXXXXXXX-X.
+"! @parameter iv_nit | NIT a validar en el formato XXXXXXXX-X
+"! @returning rv_nit | NIT normalizado
+"! @raising zcx_bp_validation | Error de validación crítico si el NIT no puede ser normalizado
+  METHOD normalize_nit.
+    rv_nit = condense( iv_nit ).
+    REPLACE ALL OCCURRENCES OF REGEX '[^0-9-]' IN rv_nit WITH ''.
+    IF rv_nit IS INITIAL OR rv_nit CP '*-*'. RETURN. ENDIF.
+    DATA(lv_digits) = rv_nit.
+    REPLACE ALL OCCURRENCES OF '-' IN lv_digits WITH ''.
+    DATA(lv_len) = strlen( lv_digits ).
+    IF lv_len >= 2.
+      DATA(lv_main_len) = lv_len - 1.
+      rv_nit = lv_digits(lv_main_len) && '-' && lv_digits+lv_main_len(1).
+    ENDIF.
+  ENDMETHOD.
+
+"! <p class="shorttext synchronized">Valida el NIT del Business Partner</p>
+"! Verifica que el NIT cumpla con el formato XXXXXXXX-X.
+"! @parameter is_bp | Estructura del Business Partner con el campo NIT
+"! @returning rt_ms | Mensajes de validación generados
+"! @raising zcx_bp_validation | Error de validación crítico si el NIT es inválido
+  METHOD validate_nit.
+    DATA(lv_norm) = me->normalize_nit( is_bp-nit ).
+    IF is_bp-nit IS INITIAL.
+      APPEND VALUE #( partner_id = is_bp-partner_id bp_type = is_bp-bp_type field_name = 'NIT' severity = 'R' message = 'Error Crítico: Vacío' ) TO rt_ms.
+    ELSE.
+      FIND REGEX '^\d{8,9}-\d$' IN lv_norm MATCH COUNT DATA(lv_cnt).
+      IF lv_cnt = 0.
+        APPEND VALUE #( partner_id = is_bp-partner_id bp_type = is_bp-bp_type field_name = 'NIT' severity = 'R' message = 'Error Crítico: Formato' original_value = is_bp-nit proposed_value = lv_norm ) TO rt_ms.
+      ELSEIF lv_norm <> is_bp-nit.
+        APPEND VALUE #( partner_id = is_bp-partner_id bp_type = is_bp-bp_type field_name = 'NIT' severity = 'A' message = 'Dato Corregible' original_value = is_bp-nit proposed_value = lv_norm ) TO rt_ms.
+      ELSE.
+        APPEND VALUE #( partner_id = is_bp-partner_id bp_type = is_bp-bp_type field_name = 'NIT' severity = 'V' message = 'Dato Válido' original_value = is_bp-nit ) TO rt_ms.
+      ENDIF.
+    ENDIF.
+  ENDMETHOD.
+
+"! <p class="shorttext synchronized">Valida el Email del Business Partner</p>
+"! Verifica que el Email tenga un formato válido y corrige errores menores.
+"! @parameter is_bp | Estructura del Business Partner con el campo Email
+"! @returning rt_ms | Mensajes de validación generados
+"! @raising zcx_bp_validation | Error de validación crítico si el Email es inválido
+  METHOD validate_email.
+    DATA(lv_email) = to_lower( condense( is_bp-email ) ).
+    IF lv_email IS INITIAL.
+      APPEND VALUE #( partner_id = is_bp-partner_id bp_type = is_bp-bp_type field_name = 'EMAIL' severity = 'R' message = 'Error Crítico: Vacío' ) TO rt_ms.
+    ELSE.
+      FIND FIRST OCCURRENCE OF '@' IN lv_email MATCH OFFSET DATA(lv_off).
+      IF sy-subrc <> 0 OR lv_off = 0 OR lv_off >= strlen( lv_email ) - 1.
+        APPEND VALUE #( partner_id = is_bp-partner_id bp_type = is_bp-bp_type field_name = 'EMAIL' severity = 'R' message = 'Error Crítico: Formato' ) TO rt_ms.
+      ELSEIF lv_email <> is_bp-email.
+        APPEND VALUE #( partner_id = is_bp-partner_id bp_type = is_bp-bp_type field_name = 'EMAIL' severity = 'A' message = 'Dato Corregible' original_value = is_bp-email proposed_value = lv_email ) TO rt_ms.
+      ELSE.
+        APPEND VALUE #( partner_id = is_bp-partner_id bp_type = is_bp-bp_type field_name = 'EMAIL' severity = 'V' message = 'Dato Válido' original_value = is_bp-email ) TO rt_ms.
+      ENDIF.
+    ENDIF.
+  ENDMETHOD.
+
+"! <p class="shorttext synchronized">Valida el DPI del Business Partner</p>
+"! Verifica que el DPI tenga exactamente 13 dígitos numéricos.
+"! @parameter is_bp | Estructura del Business Partner con el campo DPI
+"! @returning rt_ms | Mensajes de validación generados
+"! @raising zcx_bp_validation | Error de validación crítico si el DPI es inválido
+  METHOD validate_dpi.
+    DATA(lv_dpi) = is_bp-dpi_cui.
+    REPLACE ALL OCCURRENCES OF REGEX '[^0-9]' IN lv_dpi WITH ''.
+    IF lv_dpi IS INITIAL.
+      APPEND VALUE #( partner_id = is_bp-partner_id bp_type = is_bp-bp_type field_name = 'DPI' severity = 'R' message = 'Error Crítico: Vacío' ) TO rt_ms.
+    ELSEIF strlen( lv_dpi ) <> 13.
+      APPEND VALUE #( partner_id = is_bp-partner_id bp_type = is_bp-bp_type field_name = 'DPI' severity = 'R' message = 'Error Crítico: Longitud' original_value = is_bp-dpi_cui ) TO rt_ms.
+    ELSE.
+      APPEND VALUE #( partner_id = is_bp-partner_id bp_type = is_bp-bp_type field_name = 'DPI' severity = 'V' message = 'Dato Válido' original_value = is_bp-dpi_cui ) TO rt_ms.
+    ENDIF.
+  ENDMETHOD.
+
+"! <p class="shorttext synchronized">Valida el Teléfono del Business Partner</p>
+"! Verifica que el Teléfono comience con el código de país 502 y tenga un total de 11 dígitos.
+"! @parameter is_bp | Estructura del Business Partner con el campo Teléfono
+"! @returning rt_ms | Mensajes de validación generados
+"! @raising zcx_bp_validation | Error de validación crítico si el Teléfono es inválido
+      METHOD validate_phone.
+    DATA(lv_phone) = condense( is_bp-phone ). " Normalize the phone number
+    REPLACE ALL OCCURRENCES OF REGEX '[^0-9]' IN lv_phone WITH ''.
+
+    IF lv_phone IS INITIAL.
+      APPEND VALUE #( partner_id = is_bp-partner_id bp_type = is_bp-bp_type field_name = 'PHONE' severity = 'R' message = 'Error Crítico: Vacío' ) TO rt_ms.
+    ELSEIF lv_phone CP '502*' AND strlen( lv_phone ) = 11.
+      APPEND VALUE #( partner_id = is_bp-partner_id bp_type = is_bp-bp_type field_name = 'PHONE' severity = 'V' message = 'Dato Válido' original_value = is_bp-phone ) TO rt_ms.
+    ELSE.
+      APPEND VALUE #( partner_id = is_bp-partner_id bp_type = is_bp-bp_type field_name = 'PHONE' severity = 'R' message = 'Error Crítico: Formato o Código de País Inválido' original_value = is_bp-phone ) TO rt_ms.
+    ENDIF.
+  ENDMETHOD.
+
+
+
+ENDCLASS.
+
+*----------------------------------------------------------------------*
+* Selección de datos y Ejecución
+*----------------------------------------------------------------------*
+START-OF-SELECTION.
+  DATA: lt_results TYPE tt_bp_context,
+        lt_msgs    TYPE tt_validation_msg,
+        lt_type_range TYPE RANGE OF bu_type.
+
+  " Preparación del rango de tipos
+  IF p_pers = 'X'.
+    lt_type_range = VALUE #( ( sign = 'I' option = 'EQ' low = '1' ) ).
+  ELSEIF p_org = 'X'.
+    lt_type_range = VALUE #( ( sign = 'I' option = 'EQ' low = '2' ) ).
+  ENDIF.
+
+  " Consulta a base de datos
+  SELECT b~partner AS partner_id, b~type AS bp_type, idn~idnumber AS nit, idd~idnumber AS dpi_cui, a6~smtp_addr AS email
+    FROM but000 AS b
+    LEFT JOIN but0id AS idn ON idn~partner = b~partner AND idn~type = 'GTNIT'
+    LEFT JOIN but0id AS idd ON idd~partner = b~partner AND idd~type = 'GTDPI'
+    LEFT JOIN but020 AS b20 ON b20~partner = b~partner
+    LEFT JOIN adr6 AS a6    ON a6~addrnumber = b20~addrnumber
+    WHERE b~partner IN @s_bp
+      AND b~type    IN @lt_type_range
+    INTO CORRESPONDING FIELDS OF TABLE @lt_results
+    UP TO @p_max ROWS.
+
+  " Ejecución de validaciones
+  DATA(lo_val) = NEW zcop_bp_validator( ).
+  LOOP AT lt_results ASSIGNING FIELD-SYMBOL(<fs_bp>).
+    IF <fs_bp>-bp_type = '2'. " Organización
+      APPEND LINES OF lo_val->validate_nit( <fs_bp> ) TO lt_msgs.
+    ELSEIF <fs_bp>-bp_type = '1'. " Persona
+      APPEND LINES OF lo_val->validate_dpi( <fs_bp> ) TO lt_msgs.
+    ENDIF.
+    APPEND LINES OF lo_val->validate_email( <fs_bp> ) TO lt_msgs.
+    APPEND LINES OF lo_val->validate_phone( <fs_bp> ) TO lt_msgs. " Validación de Teléfono
+
+  ENDLOOP.
+
+*----------------------------------------------------------------------*
+* ALV Output
+*----------------------------------------------------------------------*
+  IF lt_msgs IS NOT INITIAL.
+    DATA: lt_alv TYPE tt_alv_line.
+
+    lt_alv = VALUE #( FOR m IN lt_msgs (
+      estado         = SWITCH #( m-severity WHEN 'R' THEN icon_led_red
+                                           WHEN 'A' THEN icon_led_yellow
+                                           ELSE icon_led_green )
+      partner_id     = m-partner_id
+      bp_type        = m-bp_type
+      field_name     = m-field_name
+      original_value = m-original_value
+      proposed_value = m-proposed_value
+      message        = m-message
+    ) ).
+
+    TRY.
+        cl_salv_table=>factory( IMPORTING r_salv_table = DATA(lo_salv) CHANGING t_table = lt_alv ).
+
+        " Configuración de Columnas
+        DATA(lo_columns) = lo_salv->get_columns( ).
+        lo_columns->set_optimize( ).
+
+        lo_columns->get_column( 'PARTNER_ID' )->set_short_text( 'BP' ).
+        lo_columns->get_column( 'BP_TYPE' )->set_short_text( 'Tipo' ).
+        lo_columns->get_column( 'FIELD_NAME' )->set_short_text( 'Campo' ).
+        lo_columns->get_column( 'ORIGINAL_VALUE' )->set_short_text( 'V. Actual' ).
+        lo_columns->get_column( 'PROPOSED_VALUE' )->set_short_text( 'V. Correg.' ).
+        lo_columns->get_column( 'MESSAGE' )->set_short_text( 'Estado' ).
+
+        lo_salv->get_functions( )->set_all( ).
+        lo_salv->display( ).
+      CATCH cx_salv_msg.
+    ENDTRY.
+  ELSE.
+    MESSAGE 'No se encontraron registros bajo los criterios seleccionados.' TYPE 'I'.
+  ENDIF.
+
+
+  CLASS ltc_bp_validator DEFINITION FOR TESTING DURATION SHORT RISK LEVEL HARMLESS.
+  PRIVATE SECTION.
+    DATA: lo_validator TYPE REF TO zcop_bp_validator,
+          ls_bp        TYPE ty_bp_context,
+          lt_msgs      TYPE tt_validation_msg.
+
+    METHODS:
+      setup,
+      test_validate_nit_valid FOR TESTING,
+      test_validate_nit_invalid FOR TESTING,
+      test_validate_dpi_valid FOR TESTING,
+      test_validate_dpi_invalid FOR TESTING,
+      test_validate_email_valid FOR TESTING,
+      test_validate_email_invalid FOR TESTING,
+      test_validate_phone_valid FOR TESTING,
+      test_validate_phone_invalid FOR TESTING.
+ENDCLASS.
+
+CLASS ltc_bp_validator IMPLEMENTATION.
+
+  METHOD setup.
+    " Crear instancia de la clase a probar
+    lo_validator = NEW zcop_bp_validator( ).
+  ENDMETHOD.
+
+  METHOD test_validate_nit_valid.
+    " Caso válido para NIT
+    ls_bp-nit = '12345678-9'.
+    lt_msgs = lo_validator->validate_nit( ls_bp ).
+    cl_abap_unit_assert=>assert_equals( act = lines( lt_msgs ) exp = 1 ).
+    cl_abap_unit_assert=>assert_equals( act = lt_msgs[ 1 ]-severity exp = 'V' ).
+  ENDMETHOD.
+
+  METHOD test_validate_nit_invalid.
+    " Caso inválido para NIT
+    ls_bp-nit = '1234-ABC'.
+    lt_msgs = lo_validator->validate_nit( ls_bp ).
+    cl_abap_unit_assert=>assert_equals( act = lines( lt_msgs ) exp = 1 ).
+    cl_abap_unit_assert=>assert_equals( act = lt_msgs[ 1 ]-severity exp = 'R' ).
+  ENDMETHOD.
+
+  METHOD test_validate_dpi_valid.
+    " Caso válido para DPI
+    ls_bp-dpi_cui = '1234567890123'.
+    lt_msgs = lo_validator->validate_dpi( ls_bp ).
+    cl_abap_unit_assert=>assert_equals( act = lines( lt_msgs ) exp = 1 ).
+    cl_abap_unit_assert=>assert_equals( act = lt_msgs[ 1 ]-severity exp = 'V' ).
+  ENDMETHOD.
+
+  METHOD test_validate_dpi_invalid.
+    " Caso inválido para DPI
+    ls_bp-dpi_cui = '12345'.
+    lt_msgs = lo_validator->validate_dpi( ls_bp ).
+    cl_abap_unit_assert=>assert_equals( act = lines( lt_msgs ) exp = 1 ).
+    cl_abap_unit_assert=>assert_equals( act = lt_msgs[ 1 ]-severity exp = 'R' ).
+  ENDMETHOD.
+
+  METHOD test_validate_email_valid.
+    " Caso válido para Email
+    ls_bp-email = 'test@example.com'.
+    lt_msgs = lo_validator->validate_email( ls_bp ).
+    cl_abap_unit_assert=>assert_equals( act = lines( lt_msgs ) exp = 1 ).
+    cl_abap_unit_assert=>assert_equals( act = lt_msgs[ 1 ]-severity exp = 'V' ).
+  ENDMETHOD.
+
+  METHOD test_validate_email_invalid.
+    " Caso inválido para Email
+    ls_bp-email = 'testexample.com'.
+    lt_msgs = lo_validator->validate_email( ls_bp ).
+    cl_abap_unit_assert=>assert_equals( act = lines( lt_msgs ) exp = 1 ).
+    cl_abap_unit_assert=>assert_equals( act = lt_msgs[ 1 ]-severity exp = 'R' ).
+  ENDMETHOD.
+
+METHOD test_validate_phone_valid.
+  " Caso válido para Teléfono
+  ls_bp-phone = '50212345678'. " Ejemplo 8 dígitos
+  lt_msgs = lo_validator->validate_phone( ls_bp ).
+  cl_abap_unit_assert=>assert_equals( act = lines( lt_msgs ) exp = 1 ).
+  cl_abap_unit_assert=>assert_equals( act = lt_msgs[ 1 ]-severity exp = 'V' ).
+ENDMETHOD.
+
+  METHOD test_validate_phone_invalid.
+    " Caso inválido para Teléfono
+    ls_bp-phone = '12345678'. " Sin código de país
+    lt_msgs = lo_validator->validate_phone( ls_bp ).
+    cl_abap_unit_assert=>assert_equals( act = lines( lt_msgs ) exp = 1 ).
+    cl_abap_unit_assert=>assert_equals( act = lt_msgs[ 1 ]-severity exp = 'R' ).
+  ENDMETHOD.
+
+ENDCLASS.
